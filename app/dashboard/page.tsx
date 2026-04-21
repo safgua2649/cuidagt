@@ -141,16 +141,14 @@ export default function Dashboard() {
                 )}
                 {perfil.homeLat && (
                   <Circle
-                    center={{lat: perfil.homeLat, lng: perfil.homeLng}}
-                    radius={perfil.radioZona || 200}
-                    options={{
-                      fillColor: dentroZona ? '#22c55e' : '#ef4444',
-                      fillOpacity: 0.15,
-                      strokeColor: dentroZona ? '#16a34a' : '#dc2626',
-                      strokeOpacity: 0.8,
-                      strokeWeight: 2,
-                    }}
-                  />
+                 center={{lat: perfil.homeLat, lng: perfil.homeLng}}
+                 radius={perfil.radioZona || 200}
+                 fillColor={dentroZona ? '#22c55e' : '#ef4444'}
+                 fillOpacity={0.15}
+                 strokeColor={dentroZona ? '#16a34a' : '#dc2626'}
+                 strokeOpacity={0.8}
+                 strokeWeight={2}
+                 />
                 )}
               </Map>
             </APIProvider>
