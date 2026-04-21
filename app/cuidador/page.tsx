@@ -94,8 +94,18 @@ export default function Cuidador() {
     };
 
     if (typeof window !== 'undefined' && window.DeviceMotionEvent) {
-      window.addEventListener('devicemotion', handleMotion);
-    }
+  // iOS 13+ requiere permiso
+  if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
+    (DeviceMotionEvent as any).requestPermission()
+      .then((permission: string) => {
+        if (permission === 'granted') {
+          window.addEventListener('devicemotion', handleMotion);
+        }
+      });
+  } else {
+    window.addEventListener('devicemotion', handleMotion);
+  }
+}
 
     return () => {
       navigator.geolocation.clearWatch(watchId);
@@ -355,7 +365,7 @@ export default function Cuidador() {
           </button>
         )}
 
-        <button onClick={() => window.history.back()}
+        <button onClick={() => window.location.href='/dashboard'}
           style={{background:'none',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:'13px'}}>
           ← Volver
         </button>
