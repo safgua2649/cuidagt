@@ -20,17 +20,19 @@ export default function Cuidador() {
   const [alertaEnviada, setAlertaEnviada] = useState(false);
   const [presionando, setPresionando] = useState(false);
   const [progreso, setProgreso] = useState(0);
+  const [acelerometroActivo, setAcelerometroActivo] = useState(false);
+  const [ultimaMagnitud, setUltimaMagnitud] = useState(0);
 
   // Deteccion de caidas
   const [caidaDetectada, setCaidaDetectada] = useState(false);
   const [contadorCaida, setContadorCaida] = useState(15);
   const [caidaConfirmada, setCaidaConfirmada] = useState(false);
+
   const aceleracionRef = useRef<number[]>([]);
   const caidaTimerRef = useRef<any>(null);
   const inmovilTimerRef = useRef<any>(null);
   const ultimoMovimientoRef = useRef<number>(Date.now());
   const caidaEnviadaRef = useRef(false);
-
   const alertaFueraRef = useRef(false);
   const numeroCaso = 'CG-' + Date.now().toString().slice(-6);
 
@@ -38,7 +40,6 @@ export default function Cuidador() {
     const p = localStorage.getItem('cuidagt_familiar');
     if (p) setPerfil(JSON.parse(p));
 
-    // GPS
     if (!navigator.geolocation) return;
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
@@ -61,7 +62,12 @@ export default function Cuidador() {
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
 
-    // Acelerometro para deteccion de caidas
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
+
+  const activarAcelerometro = () => {
+    if (typeof window === 'undefined') return;
+
     const handleMotion = (event: DeviceMotionEvent) => {
       const acc = event.accelerationIncludingGravity;
       if (!acc) return;
@@ -71,65 +77,56 @@ export default function Cuidador() {
       const z = acc.z || 0;
       const magnitud = Math.sqrt(x*x + y*y + z*z);
 
-      // Registrar movimiento
+      setUltimaMagnitud(Math.round(magnitud * 10) / 10);
+
       aceleracionRef.current.push(magnitud);
-      if (aceleracionRef.current.length > 10) aceleracionRef.current.shift();
+      if (aceleracionRef.current.length > 15) aceleracionRef.current.shift();
 
-      // Detectar impacto fuerte (caida libre + impacto)
-      const UMBRAL_CAIDA = 15; // m/s² — fuerza de impacto
-      const UMBRAL_LIBRE = 5;  // m/s² — caida libre
-
-      if (magnitud > UMBRAL_CAIDA && !caidaEnviadaRef.current) {
-        // Verificar si hubo caida libre antes del impacto
-        const huboLibre = aceleracionRef.current.slice(0, -1).some(m => m < UMBRAL_LIBRE);
-
+      if (magnitud > 15 && !caidaEnviadaRef.current) {
+        const huboLibre = aceleracionRef.current.slice(0, -1).some(m => m < 5);
         if (huboLibre) {
-          console.log('CAIDA DETECTADA — magnitud:', magnitud);
           iniciarProtocoloCaida();
         }
       }
 
-      // Actualizar ultimo movimiento
       if (magnitud > 1) ultimoMovimientoRef.current = Date.now();
     };
 
-    if (typeof window !== 'undefined' && window.DeviceMotionEvent) {
-  // iOS 13+ requiere permiso
-  if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
-    (DeviceMotionEvent as any).requestPermission()
-      .then((permission: string) => {
-        if (permission === 'granted') {
+    // iOS permiso
+    if (typeof (DeviceMotionEvent as any).requestPermission === 'function') {
+      (DeviceMotionEvent as any).requestPermission()
+        .then((permission: string) => {
+          if (permission === 'granted') {
+            window.addEventListener('devicemotion', handleMotion);
+            setAcelerometroActivo(true);
+          }
+        })
+        .catch(() => {
           window.addEventListener('devicemotion', handleMotion);
-        }
-      });
-  } else {
-    window.addEventListener('devicemotion', handleMotion);
-  }
-}
-
-    return () => {
-      navigator.geolocation.clearWatch(watchId);
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('devicemotion', handleMotion);
-      }
-      if (caidaTimerRef.current) clearInterval(caidaTimerRef.current);
-      if (inmovilTimerRef.current) clearTimeout(inmovilTimerRef.current);
-    };
-  }, []);
+          setAcelerometroActivo(true);
+        });
+    } else {
+      window.addEventListener('devicemotion', handleMotion);
+      setAcelerometroActivo(true);
+    }
+  };
 
   const iniciarProtocoloCaida = () => {
     if (caidaEnviadaRef.current) return;
 
-    // Esperar 10 segundos para confirmar inmovilidad
     inmovilTimerRef.current = setTimeout(() => {
       const tiempoSinMovimiento = Date.now() - ultimoMovimientoRef.current;
-
       if (tiempoSinMovimiento >= 8000) {
-        // Inmovilidad confirmada — mostrar alerta
         setCaidaDetectada(true);
         setContadorCaida(15);
 
-        // Countdown de 15 segundos
+        if ('speechSynthesis' in window) {
+          const msg = new SpeechSynthesisUtterance('¿Estás bien? Si necesitas ayuda presiona el botón. En 15 segundos se avisará a tu familiar.');
+          msg.lang = 'es-GT';
+          msg.rate = 0.8;
+          window.speechSynthesis.speak(msg);
+        }
+
         let cuenta = 15;
         caidaTimerRef.current = setInterval(() => {
           cuenta -= 1;
@@ -139,20 +136,13 @@ export default function Cuidador() {
             enviarAlertaCaida();
           }
         }, 1000);
-
-        // Audio de alerta
-        if ('speechSynthesis' in window) {
-          const msg = new SpeechSynthesisUtterance('¿Estás bien? Si necesitas ayuda, presiona el botón. En 15 segundos se avisará a tu familiar.');
-          msg.lang = 'es-GT';
-          msg.rate = 0.8;
-          window.speechSynthesis.speak(msg);
-        }
       }
     }, 10000);
   };
 
   const confirmarBien = () => {
     if (caidaTimerRef.current) clearInterval(caidaTimerRef.current);
+    if (inmovilTimerRef.current) clearTimeout(inmovilTimerRef.current);
     setCaidaDetectada(false);
     setContadorCaida(15);
     caidaEnviadaRef.current = false;
@@ -313,10 +303,18 @@ export default function Cuidador() {
           )}
         </div>
 
-        <div style={{background:'rgba(255,255,255,0.1)',borderRadius:'12px',padding:'10px',marginBottom:'16px'}}>
-          <p style={{color:'rgba(255,255,255,0.7)',fontSize:'11px',margin:0}}>
-            🛡️ Detección de caídas activa
-          </p>
+        <div style={{background:'rgba(255,255,255,0.1)',borderRadius:'12px',padding:'12px',marginBottom:'16px'}}>
+          {!acelerometroActivo ? (
+            <button onClick={activarAcelerometro}
+              style={{width:'100%',padding:'12px',background:'rgba(250,204,21,0.3)',borderRadius:'10px',border:'1px solid rgba(250,204,21,0.5)',cursor:'pointer',color:'#FACC15',fontWeight:'700',fontSize:'13px'}}>
+              🛡️ Activar detección de caídas
+            </button>
+          ) : (
+            <div>
+              <p style={{color:'#4ade80',fontSize:'12px',margin:'0 0 4px',fontWeight:'700'}}>✅ Detección de caídas activa</p>
+              <p style={{color:'rgba(255,255,255,0.5)',fontSize:'10px',margin:0}}>Magnitud actual: {ultimaMagnitud} m/s²</p>
+            </div>
+          )}
         </div>
 
         {alertaEnviada && (
@@ -367,7 +365,7 @@ export default function Cuidador() {
 
         <button onClick={() => window.location.href='/dashboard'}
           style={{background:'none',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:'13px'}}>
-          ← Volver
+          ← Volver al dashboard
         </button>
       </div>
     </main>
