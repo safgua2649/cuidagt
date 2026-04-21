@@ -20,12 +20,25 @@ export default function Cuidador() {
   const [alertaEnviada, setAlertaEnviada] = useState(false);
   const [presionando, setPresionando] = useState(false);
   const [progreso, setProgreso] = useState(0);
+
+  // Deteccion de caidas
+  const [caidaDetectada, setCaidaDetectada] = useState(false);
+  const [contadorCaida, setContadorCaida] = useState(15);
+  const [caidaConfirmada, setCaidaConfirmada] = useState(false);
+  const aceleracionRef = useRef<number[]>([]);
+  const caidaTimerRef = useRef<any>(null);
+  const inmovilTimerRef = useRef<any>(null);
+  const ultimoMovimientoRef = useRef<number>(Date.now());
+  const caidaEnviadaRef = useRef(false);
+
   const alertaFueraRef = useRef(false);
   const numeroCaso = 'CG-' + Date.now().toString().slice(-6);
 
   useEffect(() => {
     const p = localStorage.getItem('cuidagt_familiar');
     if (p) setPerfil(JSON.parse(p));
+
+    // GPS
     if (!navigator.geolocation) return;
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
@@ -47,8 +60,134 @@ export default function Cuidador() {
       (error) => console.log('GPS error:', error),
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
-    return () => navigator.geolocation.clearWatch(watchId);
+
+    // Acelerometro para deteccion de caidas
+    const handleMotion = (event: DeviceMotionEvent) => {
+      const acc = event.accelerationIncludingGravity;
+      if (!acc) return;
+
+      const x = acc.x || 0;
+      const y = acc.y || 0;
+      const z = acc.z || 0;
+      const magnitud = Math.sqrt(x*x + y*y + z*z);
+
+      // Registrar movimiento
+      aceleracionRef.current.push(magnitud);
+      if (aceleracionRef.current.length > 10) aceleracionRef.current.shift();
+
+      // Detectar impacto fuerte (caida libre + impacto)
+      const UMBRAL_CAIDA = 25; // m/s² — fuerza de impacto
+      const UMBRAL_LIBRE = 3;  // m/s² — caida libre
+
+      if (magnitud > UMBRAL_CAIDA && !caidaEnviadaRef.current) {
+        // Verificar si hubo caida libre antes del impacto
+        const huboLibre = aceleracionRef.current.slice(0, -1).some(m => m < UMBRAL_LIBRE);
+
+        if (huboLibre) {
+          console.log('CAIDA DETECTADA — magnitud:', magnitud);
+          iniciarProtocoloCaida();
+        }
+      }
+
+      // Actualizar ultimo movimiento
+      if (magnitud > 1) ultimoMovimientoRef.current = Date.now();
+    };
+
+    if (typeof window !== 'undefined' && window.DeviceMotionEvent) {
+      window.addEventListener('devicemotion', handleMotion);
+    }
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('devicemotion', handleMotion);
+      }
+      if (caidaTimerRef.current) clearInterval(caidaTimerRef.current);
+      if (inmovilTimerRef.current) clearTimeout(inmovilTimerRef.current);
+    };
   }, []);
+
+  const iniciarProtocoloCaida = () => {
+    if (caidaEnviadaRef.current) return;
+
+    // Esperar 10 segundos para confirmar inmovilidad
+    inmovilTimerRef.current = setTimeout(() => {
+      const tiempoSinMovimiento = Date.now() - ultimoMovimientoRef.current;
+
+      if (tiempoSinMovimiento >= 8000) {
+        // Inmovilidad confirmada — mostrar alerta
+        setCaidaDetectada(true);
+        setContadorCaida(15);
+
+        // Countdown de 15 segundos
+        let cuenta = 15;
+        caidaTimerRef.current = setInterval(() => {
+          cuenta -= 1;
+          setContadorCaida(cuenta);
+          if (cuenta <= 0) {
+            clearInterval(caidaTimerRef.current);
+            enviarAlertaCaida();
+          }
+        }, 1000);
+
+        // Audio de alerta
+        if ('speechSynthesis' in window) {
+          const msg = new SpeechSynthesisUtterance('¿Estás bien? Si necesitas ayuda, presiona el botón. En 15 segundos se avisará a tu familiar.');
+          msg.lang = 'es-GT';
+          msg.rate = 0.8;
+          window.speechSynthesis.speak(msg);
+        }
+      }
+    }, 10000);
+  };
+
+  const confirmarBien = () => {
+    if (caidaTimerRef.current) clearInterval(caidaTimerRef.current);
+    setCaidaDetectada(false);
+    setContadorCaida(15);
+    caidaEnviadaRef.current = false;
+    aceleracionRef.current = [];
+  };
+
+  const enviarAlertaCaida = async () => {
+    if (caidaEnviadaRef.current) return;
+    caidaEnviadaRef.current = true;
+    setCaidaConfirmada(true);
+    setCaidaDetectada(false);
+
+    const p = JSON.parse(localStorage.getItem('cuidagt_familiar') || '{}');
+    const loc = ubicacion || { lat: 0, lng: 0 };
+
+    try {
+      await fetch('/api/alerta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tipo: 'caida',
+          subtipo: 'caida_detectada',
+          nombre: p.nombreAdulto || 'Adulto Mayor',
+          telefono: p.telefono || '',
+          lat: loc.lat,
+          lng: loc.lng,
+          descripcion: 'Caida detectada automaticamente — sin respuesta por 15 segundos',
+          timestamp: new Date().toISOString(),
+          contactoFamiliar: p.telefono,
+          numeroCaso,
+        }),
+      });
+
+      if ('speechSynthesis' in window) {
+        const msg = new SpeechSynthesisUtterance('Tu familiar ha sido notificado. La ayuda está en camino.');
+        msg.lang = 'es-GT';
+        window.speechSynthesis.speak(msg);
+      }
+    } catch (e) { console.error(e); }
+
+    setTimeout(() => {
+      setCaidaConfirmada(false);
+      caidaEnviadaRef.current = false;
+    }, 30000);
+  };
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -113,7 +252,9 @@ export default function Cuidador() {
   return (
     <main style={{
       minHeight: '100vh',
-      background: dentroZona ? 'linear-gradient(135deg, #1e3a8a, #1d4ed8)' : 'linear-gradient(135deg, #991b1b, #dc2626)',
+      background: caidaDetectada ? 'linear-gradient(135deg, #7f1d1d, #dc2626)' :
+                  dentroZona ? 'linear-gradient(135deg, #1e3a8a, #1d4ed8)' :
+                  'linear-gradient(135deg, #991b1b, #dc2626)',
       fontFamily: 'sans-serif',
       display: 'flex',
       flexDirection: 'column',
@@ -123,14 +264,36 @@ export default function Cuidador() {
       transition: 'background 1s',
     }}>
       <div style={{maxWidth:'360px',width:'100%',textAlign:'center'}}>
+
+        {caidaDetectada && (
+          <div style={{background:'rgba(255,255,255,0.2)',borderRadius:'20px',padding:'24px',marginBottom:'20px',border:'3px solid #fef08a'}}>
+            <p style={{color:'#fef08a',fontWeight:'900',fontSize:'20px',margin:'0 0 8px'}}>⚠️ ¿Estás bien?</p>
+            <p style={{color:'white',fontSize:'14px',margin:'0 0 16px'}}>Se detectó una posible caída. Si estás bien presiona el botón.</p>
+            <div style={{background:'rgba(0,0,0,0.3)',borderRadius:'50%',width:'80px',height:'80px',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 16px'}}>
+              <span style={{color:'#fef08a',fontWeight:'900',fontSize:'32px'}}>{contadorCaida}</span>
+            </div>
+            <button onClick={confirmarBien}
+              style={{width:'100%',padding:'16px',background:'#4ade80',borderRadius:'14px',border:'none',cursor:'pointer',fontWeight:'900',fontSize:'18px',color:'#14532d'}}>
+              ✅ Estoy bien
+            </button>
+          </div>
+        )}
+
+        {caidaConfirmada && (
+          <div style={{background:'rgba(220,38,38,0.3)',borderRadius:'12px',padding:'12px',marginBottom:'16px',border:'1px solid rgba(220,38,38,0.6)'}}>
+            <p style={{color:'#fef08a',fontWeight:'900',fontSize:'14px',margin:0}}>🚨 Alerta de caída enviada a tu familiar</p>
+          </div>
+        )}
+
         <p style={{color:'white',fontWeight:'900',fontSize:'26px',margin:'0 0 4px'}}>
           {perfil?.nombreAdulto || 'Adulto Mayor'}
         </p>
-        <p style={{color:ubicacion?'#4ade80':'#fbbf24',fontSize:'14px',marginBottom:'24px',fontWeight:'700'}}>
+        <p style={{color:ubicacion?'#4ade80':'#fbbf24',fontSize:'14px',marginBottom:'16px',fontWeight:'700'}}>
           {ubicacion ? '📍 GPS activo — estas protegido' : '📡 Activando GPS...'}
         </p>
-        <div style={{background:'rgba(255,255,255,0.15)',borderRadius:'16px',padding:'16px',marginBottom:'32px'}}>
-          <p style={{color:dentroZona?'#4ade80':'#fef08a',fontWeight:'900',fontSize:'18px',margin:'0 0 4px'}}>
+
+        <div style={{background:'rgba(255,255,255,0.15)',borderRadius:'16px',padding:'16px',marginBottom:'16px'}}>
+          <p style={{color:dentroZona?'#4ade80':'#fef08a',fontWeight:'900',fontSize:'16px',margin:'0 0 4px'}}>
             {dentroZona ? '✅ Dentro de zona segura' : '⚠️ Fuera de zona segura'}
           </p>
           {ubicacion && perfil?.homeLat && (
@@ -139,14 +302,23 @@ export default function Cuidador() {
             </p>
           )}
         </div>
+
+        <div style={{background:'rgba(255,255,255,0.1)',borderRadius:'12px',padding:'10px',marginBottom:'16px'}}>
+          <p style={{color:'rgba(255,255,255,0.7)',fontSize:'11px',margin:0}}>
+            🛡️ Detección de caídas activa
+          </p>
+        </div>
+
         {alertaEnviada && (
-          <div style={{background:'rgba(74,222,128,0.2)',borderRadius:'12px',padding:'12px',marginBottom:'20px',border:'1px solid rgba(74,222,128,0.4)'}}>
+          <div style={{background:'rgba(74,222,128,0.2)',borderRadius:'12px',padding:'12px',marginBottom:'16px',border:'1px solid rgba(74,222,128,0.4)'}}>
             <p style={{color:'#4ade80',fontWeight:'900',fontSize:'14px',margin:0}}>✅ ¡Alerta enviada a tu familiar!</p>
           </div>
         )}
+
         <p style={{color:'rgba(255,255,255,0.7)',fontSize:'13px',marginBottom:'16px'}}>
           Mantén presionado el botón para pedir ayuda
         </p>
+
         <div style={{position:'relative',marginBottom:'24px'}}>
           <button
             onMouseDown={() => setPresionando(true)}
@@ -175,12 +347,14 @@ export default function Cuidador() {
             </div>
           )}
         </div>
+
         {perfil?.telefono && (
           <button onClick={() => window.location.href=`tel:${perfil.telefono}`}
             style={{width:'100%',padding:'16px',background:'rgba(255,255,255,0.2)',borderRadius:'14px',border:'none',cursor:'pointer',fontWeight:'900',fontSize:'16px',color:'white',marginBottom:'12px',marginTop:'16px'}}>
             📞 Llamar a mi familiar
           </button>
         )}
+
         <button onClick={() => window.history.back()}
           style={{background:'none',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:'13px'}}>
           ← Volver
