@@ -76,8 +76,8 @@ export default function Cuidador() {
       if (aceleracionRef.current.length > 10) aceleracionRef.current.shift();
 
       // Detectar impacto fuerte (caida libre + impacto)
-      const UMBRAL_CAIDA = 25; // m/s² — fuerza de impacto
-      const UMBRAL_LIBRE = 3;  // m/s² — caida libre
+      const UMBRAL_CAIDA = 15; // m/s² — fuerza de impacto
+      const UMBRAL_LIBRE = 5;  // m/s² — caida libre
 
       if (magnitud > UMBRAL_CAIDA && !caidaEnviadaRef.current) {
         // Verificar si hubo caida libre antes del impacto
